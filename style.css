@@ -1,0 +1,8 @@
+/* style.css */
+
+@import url("./styles/core.css");
+@import url("./styles/wechat.css");
+@import url("./styles/boliBite.css");
+@import url("./styles/campusCard.css");
+@import url("./styles/weather.css");
+@import url("./styles/commandQueue.css");
