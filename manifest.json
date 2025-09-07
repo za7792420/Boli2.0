@@ -1,7 +1,7 @@
 {
   "name": "手机UI美化",
   "version": "3.1.0",
-  "author": "mimituo",
+  "author": "无错",
   "description": "一个集成了微信、天气、校园服务等App的模块化手机UI。",
   "html": "inject.html",
   "css": ["style.css"],
