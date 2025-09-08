@@ -1,20 +1,15 @@
-// index.js (已修复)
+// /index.js (版本 3.1.2 - 终极修复版)
 
 (function () {
-    // 防止重复初始化
-    if (window.isPhoneUiExtInitialized) {
-        console.log("Phone UI Extension already initialized. Halting.");
-        return;
-    }
+    if (window.isPhoneUiExtInitialized) { return; }
     window.isPhoneUiExtInitialized = true;
 
-    // --- 变化点：移除了这里的模块变量声明 ---
-
-    // 全局状态和DOM引用
     const DOMElements = {};
     let state = {};
     let STICKERS = {};
+    let modules = {}; // 用来存放所有已初始化的模块实例
 
+    // ---- DOM & State Management ----
     function initializeDomElements() {
         Object.assign(DOMElements, {
             phone: document.querySelector('.phone-container'),
@@ -29,15 +24,15 @@
 
     function loadState() {
         try {
-            const savedData = localStorage.getItem(window.phoneUiUtils.STORAGE_KEY_STATE); // 直接使用 window 上的对象
+            const savedData = localStorage.getItem(modules.utils.STORAGE_KEY_STATE);
             if (savedData) {
                 const data = JSON.parse(savedData);
                 if (data.state?.config) {
                     state = data.state;
                     STICKERS = data.STICKERS || {};
-                    if (data.weatherData) window.phoneUiWeather.setInitialData(data.weatherData);
-                    if (data.boliBiteState) window.phoneUiBoliBite.setInitialState(data.boliBiteState);
-                    if (data.boliCampusCardState) window.phoneUiCampusCard.setInitialState(data.boliCampusCardState);
+                    if (data.weatherData) modules.weather.setInitialData(data.weatherData);
+                    if (data.boliBiteState) modules.boliBite.setInitialState(data.boliBiteState);
+                    if (data.boliCampusCardState) modules.campusCard.setInitialState(data.boliCampusCardState);
                     return true;
                 }
             }
@@ -52,149 +47,133 @@
             const fullState = {
                 state,
                 STICKERS,
-                weatherData: window.phoneUiWeather.getData(),
-                boliBiteState: window.phoneUiBoliBite.getState(),
-                boliCampusCardState: window.phoneUiCampusCard.getState(),
+                weatherData: modules.weather.getData(),
+                boliBiteState: modules.boliBite.getState(),
+                boliCampusCardState: modules.campusCard.getState(),
             };
-            localStorage.setItem(window.phoneUiUtils.STORAGE_KEY_STATE, JSON.stringify(fullState));
+            localStorage.setItem(modules.utils.STORAGE_KEY_STATE, JSON.stringify(fullState));
         } catch (e) {
             console.error("Error saving state to localStorage:", e);
         }
     }
 
-    function processNewData(utils, wechat, weather, campusCard) {
+    // ---- Data Processing ----
+    function processNewData() {
         let sourceContent = DOMElements.sourceData.textContent;
 
         const weatherRegex = /\[天气更新: (.*?), (-?\d+), (.*?), (-?\d+)\/(-?\d+)\]\n?/g;
         let weatherMatch;
         while ((weatherMatch = weatherRegex.exec(sourceContent)) !== null) {
-            const newData = {
-                city: weatherMatch[1].trim(),
-                temp: parseInt(weatherMatch[2], 10),
-                condition: weatherMatch[3].trim(),
-                hi: parseInt(weatherMatch[4], 10),
-                lo: parseInt(weatherMatch[5], 10)
-            };
-            weather.updateWeatherUI(newData);
+            const newData = { city: weatherMatch[1].trim(), temp: parseInt(weatherMatch[2], 10), condition: weatherMatch[3].trim(), hi: parseInt(weatherMatch[4], 10), lo: parseInt(weatherMatch[5], 10) };
+            modules.weather.updateWeatherUI(newData);
             DOMElements.sourceData.textContent = DOMElements.sourceData.textContent.replace(weatherMatch[0], '');
         }
 
         sourceContent = DOMElements.sourceData.textContent.trim();
-        if (!sourceContent || sourceContent === state.lastProcessedSource) {
-            return;
-        }
+        if (!sourceContent || sourceContent === state.lastProcessedSource) return;
 
-        const newData = utils.parseSourceData(sourceContent, state);
-
-        if (newData.campusCard && Object.keys(newData.campusCard).length > 0) {
-            campusCard.updateState(newData.campusCard);
-        }
-
-        wechat.processData(newData);
+        const newData = modules.utils.parseSourceData(sourceContent, state);
+        if (newData.campusCard) modules.campusCard.updateState(newData.campusCard);
+        modules.wechat.processData(newData);
 
         state.lastProcessedSource = sourceContent;
         saveState();
-        wechat.fullRender(); // fullRender now managed by wechat module mostly
-        weather.render();
-        window.phoneUiBoliBite.updateCartBadge();
-        campusCard.render();
+        fullRender();
 
-
-        if (wechat.isChatWindowActive()) {
-            wechat.refreshCurrentChatWindow();
+        if (modules.wechat.isChatWindowActive()) {
+            modules.wechat.refreshCurrentChatWindow();
         }
     }
 
-    function setupEventListeners(utils, wechat, settingsMap) {
+    // ---- Rendering ----
+    function fullRender() {
+        DOMElements.homeScreen.style.backgroundImage = `url('${state.config.home_wallpaper}')`;
+        modules.wechat.setChatWallpaper(state.config.chat_wallpaper);
+        modules.wechat.setMomentsCover(state.config.moments_cover);
+        modules.wechat.fullRender();
+        modules.weather.render();
+        modules.boliBite.updateCartBadge();
+        modules.campusCard.render();
+    }
+
+    // ---- Event Listeners ----
+    function setupEventListeners() {
         DOMElements.phone.addEventListener('click', e => {
             const C = s => e.target.closest(s);
             let target;
-
-            if (C('#boli-bite-app') || C('#boli-campus-card-app')) {
-                 return;
+            if (C('#boli-bite-app') || C('#boli-campus-card-app') || C('#wechat-app')) {
+                return; // Let modules handle their own internal clicks
             }
-
-            if (target = C('#weather-widget')) { utils.navigateTo('weather-app-view'); }
-            else if (target = C('.app-icon')) { e.preventDefault(); utils.navigateTo(target.dataset.app); }
+            if (target = C('#weather-widget')) modules.utils.navigateTo('weather-app-view');
+            else if (target = C('.app-icon')) { e.preventDefault(); modules.utils.navigateTo(target.dataset.app); }
         });
 
+        const observer = new MutationObserver(processNewData);
+        observer.observe(DOMElements.sourceData, { childList: true, characterData: true, subtree: true });
 
         document.getElementById('setting_clear_storage')?.addEventListener('click', () => {
             if (confirm("【警告】确定要清除所有本地数据吗？此操作不可恢复。")) {
-                localStorage.removeItem(window.phoneUiUtils.STORAGE_KEY_STATE);
-                localStorage.removeItem(window.phoneUiUtils.STORAGE_KEY_MESSAGES);
-                window.phoneUiCampusCard.resetState();
+                localStorage.removeItem(modules.utils.STORAGE_KEY_STATE);
+                localStorage.removeItem(modules.utils.STORAGE_KEY_MESSAGES);
+                modules.campusCard.resetState();
                 location.reload();
             }
         });
 
+        const settingsMap = {
+            'setting_chat_wallpaper': { l: '聊天背景', k: 'chat_wallpaper' }, 'setting_home_wallpaper': { l: '主页壁纸', k: 'home_wallpaper' }, 'setting_moments_cover': { l: '朋友圈封面', k: 'moments_cover' },
+            'setting_user_avatar': { l: '我的头像', k: 'user_avatar' }, 'setting_user_name': { l: '我的昵称', k: 'user_name' }, 'setting_moments_signature': { l: '个性签名', k: 'moments_signature' }
+        };
         Object.entries(settingsMap).forEach(([id, { l, k }]) => {
             document.getElementById(id)?.addEventListener('click', () => {
                 const nV = prompt(`输入新的${l}:`, state.config[k] || '');
-                wechat.applySettingChange(k, nV, () => {
-                     DOMElements.homeScreen.style.backgroundImage = `url('${state.config.home_wallpaper}')`;
-                     wechat.setChatWallpaper(state.config.chat_wallpaper);
-                     wechat.setMomentsCover(state.config.moments_cover);
-                });
+                modules.wechat.applySettingChange(k, nV, fullRender); // Pass fullRender for redraw
             });
         });
     }
 
+    // --- MAIN INITIALIZATION ---
     function initialize() {
-        // --- 变化点：把模块变量声明移到这里 ---
-        const utils = window.phoneUiUtils;
-        const commandQueue = window.phoneUiCommandQueue;
-        const wechat = window.phoneUiWechat;
-        const weather = window.phoneUiWeather;
-        const boliBite = window.phoneUiBoliBite;
-        const campusCard = window.phoneUiCampusCard;
-
-        initializeDomElements();
-
-        const hasLocalData = loadState();
-        if (!hasLocalData || !state.config) {
-            state = { config: {}, chatList: [], chatLogs: {}, momentsLog: [], contacts: [], contactMap: {}, friendRequests: [], handledRequestIds: [], avatarOverrides: {}, lastProcessedSource: null };
-        }
-        ['chatList', 'momentsLog', 'contacts', 'friendRequests', 'handledRequestIds'].forEach(key => { if (!state[key] || !Array.isArray(state[key])) state[key] = []; });
-        ['chatLogs', 'contactMap', 'avatarOverrides'].forEach(key => { if (!state[key] || typeof state[key] !== 'object' || state[key] === null) state[key] = {}; });
-
-        utils.init(DOMElements, state);
-        commandQueue.init(utils.sendCommandToAI);
-        weather.init(utils.navigateTo);
-        campusCard.init({ navigateTo: utils.navigateTo, queueCommand: commandQueue.queueCommand, showIslandNotification: utils.showIslandNotification });
-        boliBite.init({ navigateTo: utils.navigateTo, queueCommand: commandQueue.queueCommand, showIslandNotification: utils.showIslandNotification, campusCardModule: campusCard });
-        wechat.init({ DOMElements, state, STICKERS, navigateTo: utils.navigateTo, navigateBack: utils.navigateBack, goHome: utils.goHome, queueCommand: commandQueue.queueCommand, showIslandNotification: utils.showIslandNotification, saveState });
-
-        // 将模块传递给需要它们的函数
-        const observer = new MutationObserver(() => processNewData(utils, wechat, weather, campusCard));
-        observer.observe(DOMElements.sourceData, { childList: true, characterData: true, subtree: true });
-
-        const settingsMap = {
-            'setting_chat_wallpaper': { l: '聊天背景', k: 'chat_wallpaper' },
-            'setting_home_wallpaper': { l: '主页壁纸', k: 'home_wallpaper' },
-            'setting_moments_cover': { l: '朋友圈封面', k: 'moments_cover' },
-            'setting_user_avatar': { l: '我的头像', k: 'user_avatar' },
-            'setting_user_name': { l: '我的昵称', k: 'user_name' },
-            'setting_moments_signature': { l: '个性签名', k: 'moments_signature' }
+        // 1. Assign raw modules
+        modules = {
+            utils: window.phoneUiUtils,
+            commandQueue: window.phoneUiCommandQueue,
+            wechat: window.phoneUiWechat,
+            weather: window.phoneUiWeather,
+            boliBite: window.phoneUiBoliBite,
+            campusCard: window.phoneUiCampusCard
         };
 
-        setupEventListeners(utils, wechat, settingsMap);
+        // 2. Initialize DOM and State
+        initializeDomElements();
 
-        // 初始渲染
-        DOMElements.homeScreen.style.backgroundImage = `url('${state.config.home_wallpaper}')`;
-        wechat.setChatWallpaper(state.config.chat_wallpaper);
-        wechat.setMomentsCover(state.config.moments_cover)
-        wechat.fullRender();
-        weather.render();
-        boliBite.updateCartBadge();
-        campusCard.render();
-        utils.goHome();
-        commandQueue.updateUI();
+        // 3. Initialize modules with dependencies
+        modules.utils.init(DOMElements, state);
+        modules.commandQueue.init({ sendCommandToAI: modules.utils.sendCommandToAI, campusCardModule: modules.campusCard }); // Inject campusCard
+        modules.weather.init({ navigateTo: modules.utils.navigateTo });
+        modules.campusCard.init({ navigateTo: modules.utils.navigateTo, queueCommand: modules.commandQueue.queueCommand, showIslandNotification: modules.utils.showIslandNotification });
+        modules.boliBite.init({ navigateTo: modules.utils.navigateTo, queueCommand: modules.commandQueue.queueCommand, showIslandNotification: modules.utils.showIslandNotification, campusCardModule: modules.campusCard });
+        modules.wechat.init({ DOMElements, state, STICKERS, utils: modules.utils, commandQueue: modules.commandQueue, saveState });
 
-        processNewData(utils, wechat, weather, campusCard);
-        console.log("Phone UI Extension Initialized Successfully.");
+        // 4. Load state after modules are ready
+        if (!loadState() || !state.config) {
+            state = { config: {}, chatList: [], chatLogs: {}, momentsLog: [], contacts: [], contactMap: {}, friendRequests: [], handledRequestIds: [], avatarOverrides: {}, lastProcessedSource: null };
+            ['chatList','momentsLog','contacts','friendRequests','handledRequestIds'].forEach(k => { if (!state[k]) state[k] = []; });
+            ['chatLogs','contactMap','avatarOverrides'].forEach(k => { if (!state[k]) state[k] = {}; });
+        }
+
+        // 5. Setup event listeners and render
+        setupEventListeners();
+        fullRender();
+        modules.utils.goHome();
+        modules.commandQueue.updateUI();
+
+        // 6. Initial data processing
+        processNewData();
+        console.log("Phone UI Extension Initialized Successfully (v.3.1.2)");
     }
 
-    setTimeout(initialize, 150); // 稍微增加延迟以确保所有环境都准备好
+    // Delay initialization to ensure all scripts are loaded
+    setTimeout(initialize, 200);
 
 })();
